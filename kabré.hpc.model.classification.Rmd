@@ -1,0 +1,302 @@
+---
+title: "Kabré.HPC.Model.Classification"
+author: "Dylan Benavides Castillo."
+date: "2025-04-25"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Librerías
+
+```{r setup, warning=FALSE, message=FALSE}
+source("functions.R")
+
+library(fastDummies)
+library(vcd)
+library(tidyverse)
+library(caret)
+library(traineR)
+library(kableExtra)
+library(scales)
+library(htmltools)
+library(caret)
+library(traineR)
+library(scales)
+library(readr)
+library(plotly)
+library(ggplot2)
+library(corrplot)
+library(GGally)
+library(lubridate)
+library(stringr)
+library(traineR)
+library(caret)
+library(glmnet)
+library(car)
+library(caret)
+library(dplyr)
+library(DT)
+library(ggcorrplot)
+library(randomForest)
+library(caret)
+library(nnet)
+library(ggplot2)
+library(randomForest)
+library(DescTools)
+library(nnet)
+library(readxl)
+library(nortest)
+library(bestNormalize)
+```
+
+# Datos.
+
+```{r}
+data <- read.csv("sacct.csv", sep = "|")
+data <- data %>% mutate(State=gsub("CANCELLED by \\d+$", "CANCELLED", State))
+data <- data[c("ConsumedEnergyRaw","CPUTimeRAW","ReqCPUS",
+               "ReqMem","ReqNodes","ResvCPURAW",
+               "Submit","TimelimitRaw","Partition", 
+               "Priority","QOS","State")]
+
+data$Submit <- ymd_hms(data$Submit)
+data$SubmitHour <- hour(data$Submit)
+data$SubmitWeekday <- wday(data$Submit)
+
+set1 <- data %>% filter(Partition=="andalan" | Partition=="andalan-debug" | Partition=="andalan-long")
+set2 <- data %>% filter(Partition=="dribe" | Partition=="dribe-long" | Partition=="dribe-debug" | Partition=="dribe-test")
+set3 <- data %>% filter(Partition=="nu" | Partition=="nu-all" | Partition=="nu-debug" | Partition=="nu-long" | Partition=="nu-wide")
+set4 <- data %>% filter(Partition=="nukwa" | Partition=="nukwa-debug" | Partition=="nukwa-long" | Partition=="nukwa-v100" | Partition=="nukwa-wide")
+set5 <- data %>% filter(Partition=="kura" | Partition=="kura-all" | Partition=="kura-debug" | Partition=="kura-long" | Partition == "kura-test" | Partition =="kura-wide")
+
+sets <- list(set1, set2, set3, set4, set5)
+names(sets) <- c("Andalan", "Dribe", "Nu", "Nukwa", "Kura")
+row.counts <- sapply(sets, nrow) #cantidad de trabajos por partición.
+
+row.counts <- data.frame(Trabajos=row.counts)
+row.counts$P <- rownames(row.counts)
+ggplot(row.counts, aes(x = P, y = Trabajos, fill=P)) + geom_col(color = "black") + theme_minimal() 
+```
+
+## Modelo de clasificación.
+
+Este modelo busca clasificar instancias de envíos de trabajos para predecir fallos después del envío.
+
+La verdad para estas tareas proviene de datos históricos recolectados en KABRÉ durante meses, lo que plantea una pregunta abierta sobre cómo validar esta verdad de terreno en distintos sistemas HPC. 
+
+En su artículo Machine Learning for Predictive Analytics of Compute Cluster Jobs, Andresen et al. mencionan que esto representa una razón importante para contar con datos de acceso abierto: para que se pueda evaluar el potencial de transferencia entre sistemas como un criterio, y se puedan valorar métodos de aprendizaje por transferencia entre dominios.
+
+Para trabajos futuros, se sugiere considerar características previas (ej: nivel de experiencia HPC) de los usuarios como variable predictora.
+
+**Variables predictoras (que conozco antes de que inicie el job):** ReqMem, ReqCPUS, ReqNodes, TimelimitRaw, ResvCPURAW, Submit, Priority, Partition, QOS.
+**Variable a predecir:** State (FAILED / Not FAILED)
+
+```{r}
+data.clasificacion <- data %>% select(-c("ConsumedEnergyRaw", "CPUTimeRAW", "Submit"))
+head(data.clasificacion)
+
+data.clasificacion <- data.clasificacion %>%
+  mutate(Partition = case_when(
+    str_detect(Partition, "^andalan") ~ "andalan",
+    str_detect(Partition, "^dribe") ~ "dribe",
+    str_detect(Partition, "^nukwa") ~ "nukwa",
+    str_detect(Partition, "^nu") ~ "nu",
+    str_detect(Partition, "^kura") ~ "kura",
+    TRUE ~ Partition  
+  ))
+
+data.clasificacion <- data.clasificacion %>% filter(State != "CANCELLED")
+data.clasificacion$State <- ifelse(data.clasificacion$State %in% c("FAILED", "TIMEOUT"), "Fa", "NF")
+data.clasificacion$State <- as.factor(data.clasificacion$State)
+data.clasificacion$Partition <- as.factor(data.clasificacion$Partition)
+data.clasificacion$QOS <- as.factor(data.clasificacion$QOS)
+data.clasificacion$ReqMem <- sapply(data.clasificacion$ReqMem, function1)
+```
+
+## EDA
+
+```{r}
+EDAc(data.clasificacion,1)
+```
+
+```{r}
+edacset1 <- read.csv("edacset1.csv", sep = ",")
+edacset1$State <- as.factor(edacset1$State)
+edacset1$QOS <- as.factor(edacset1$QOS)
+edacset1$Partition <- as.factor(edacset1$Partition)
+
+edacset1$TimelimitRaw[edacset1$TimelimitRaw=="Partition_Limit"] <- NA
+partitionlimit <- colSums(is.na(edacset1)) #Trabajos con partition limit
+edacset1$TimelimitRaw[is.na(edacset1$TimelimitRaw)] <- max(edacset1$TimelimitRaw, na.rm = TRUE)
+
+edacset1$TimelimitRaw <- as.numeric(edacset1$TimelimitRaw) 
+edacset1$TimelimitRaw <- edacset1$TimelimitRaw*60
+
+glimpse(edacset1)
+```
+
+## Mining
+
+```{r}
+DataMiningc(edacset1,1)
+```
+
+```{r}
+miningsetc1 <- read.csv("miningsetc1.csv", sep = ",")
+miningsetc1$State <- as.factor(miningsetc1$State)
+miningsetc1$QOS <- as.factor(miningsetc1$QOS)
+miningsetc1$Partition <- as.factor(miningsetc1$Partition)
+
+nrow(miningsetc1)
+
+glimpse(miningsetc1)
+```
+
+```{r}
+miningsetc1.num <- miningsetc1[sapply(miningsetc1, is.numeric)]
+miningsetc1.cat <- miningsetc1[sapply(miningsetc1, is.factor)]
+miningsetc1.num.norm <- scale(miningsetc1.num, center = TRUE, scale = TRUE)
+miningsetc1.n <- data.frame(miningsetc1.num.norm, miningsetc1.cat)
+```
+
+```{r}
+res <- Corrc(miningsetc1)
+library(ggplot2)
+library(patchwork)
+
+g1 <- res[[19]]
+g2 <- res[[20]]
+g3 <- res[[21]]
+g4 <- res[[22]]
+g5 <- res[[23]]
+g6 <- res[[24]]
+g7 <- res[[25]]
+g8 <- res[[26]]
+
+
+graf <- (g1 | g2 | g3 | g4) / (g5 | g6 | g7 | g8)
+
+
+#ggsave("graficos_densidad.pdf", plot = graf, width = 16, height = 8)
+
+
+```
+
+## Models
+
+```{r}
+Modelsc(miningsetc1)
+```
+
+## Modelos seleccionados: XGBoosting y RandomForest. Análisis.
+
+```{r}
+muestra      <- createDataPartition(y = miningsetc1$State, p = 0.85, list = F)
+taprendizaje <- miningsetc1[muestra, ]
+ttesting     <- miningsetc1[-muestra, ]  
+ 
+modeloA <- train.randomForest(State ~ ., data = taprendizaje)
+prediccionA <- predict(modeloA, ttesting)
+modeloA
+
+ttesting1 <- ttesting
+ttesting1$predState <- prediccionA$prediction
+ttesting1$Veredicto <- ifelse(ttesting1$State == ttesting1$predState, "Correcto", "Incorrecto")
+#head(ttesting1)
+
+pred1 <- predict(modeloA, ttesting, type = "prob")
+
+Estado1 <- pred1$prediction[,"NF"]
+Clase1 <- ttesting$State
+ROC.plot(Estado1,Clase1)
+
+mc1 <- confusion.matrix(ttesting, prediccionA)
+general.indexes(mc = mc1)
+
+Corte      <- 0.5
+Prediccion <- ifelse(Estado1 > Corte, "NF", "Fa")
+MC         <- table(Clase1, Pred = factor(Prediccion, levels = c("Fa", "NF")))
+general.indexes(mc = MC)
+
+Corte      <- 0.7
+Prediccion <- ifelse(Estado1 >= Corte, "NF", "Fa")
+MC <- table(Clase1, Pred = factor(Prediccion, levels = c("Fa", "NF")))
+general.indexes(mc = MC)
+
+for(Corte in seq(1, 0, by = -0.05)) {
+    Prediccion <- ifelse(Estado1 >= Corte, "NF", "Fa")
+    MC         <- table(Clase1, Pred = factor(Prediccion, levels = c("Fa", "NF")))
+    cat("\nCorte usado para la Probabilidad = ")
+    cat(Corte)
+    cat("\n")
+    print(general.indexes(mc = MC))
+    cat("\n========================================")
+}
+```
+
+```{r}
+modeloB <- train.xgboost(State ~ ., data = taprendizaje, nrounds = 79, print_every_n = 10, maximize = F , eval_metric = "error",verbose = 0)
+prediccionB <- predict(modeloB, ttesting) 
+modeloB
+#prediccionB
+
+ttesting2 <- ttesting
+ttesting2$predState <- prediccionB$prediction
+ttesting2$Veredicto <- ifelse(ttesting2$State == ttesting2$predState, "Correcto", "Incorrecto")
+#ttesting2
+
+pred2 <- predict(modeloB, ttesting, type = "prob")
+
+Estado2 <- pred2$prediction[,"NF"]
+Clase2 <- ttesting$State
+ROC.plot(Estado2,Clase2)
+
+for(Corte in seq(1, 0, by = -0.05)) {
+    Prediccion <- ifelse(Estado2 >= Corte, "NF", "Fa")
+    MC <- table(Clase2, Pred = factor(Prediccion, levels = c("Fa", "NF")))
+    cat("\nCorte usado para la Probabilidad = ")
+    cat(Corte)
+    cat("\n")
+    print(general.indexes(mc = MC))
+    cat("\n========================================")
+}
+```
+
+```{r}
+modeloC <- train.knn(State ~ ., data = taprendizaje, kmax=37)
+prediccionC <- predict(modeloC, ttesting) 
+modeloC
+
+ttesting3 <- ttesting
+ttesting3$predState <- prediccionC$prediction
+ttesting3$Veredicto <- ifelse(ttesting3$State == ttesting3$predState, "Correcto", "Incorrecto")
+#ttesting3
+
+pred3 <- predict(modeloC, ttesting, type = "prob")
+
+Estado3 <- pred3$prediction[,"NF"]
+Clase3 <- ttesting$State
+ROC.plot(Estado3,Clase3)
+ROC.area(Estado3,Clase3)
+
+for(Corte in seq(1, 0, by = -0.05)) {
+    Prediccion <- ifelse(Estado3 >= Corte, "NF", "Fa")
+    MC <- table(Clase3, Pred = factor(Prediccion, levels = c("Fa", "NF")))
+    cat("\nCorte usado para la Probabilidad = ")
+    cat(Corte)
+    cat("\n")
+    print(general.indexes(mc = MC))
+    cat("\n========================================")
+}
+```
+
+```{r}
+ROC.plot(Estado1 , Clase1)
+ROC.plot(Estado2, Clase2, .add = TRUE, color = "blue")
+ROC.plot(Estado3, Clase3, .add = TRUE, color = "magenta")
+
+ROC.area(Estado1,Clase1)
+ROC.area(Estado2,Clase2)
+ROC.area(Estado3,Clase3)
+```

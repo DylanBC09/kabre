@@ -1,0 +1,1245 @@
+---
+title: "Kabré.HPC.Model.Predictive.Separate"
+author: "Dylan Benavides Castillo."
+date: "2025-04-25"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Librerías.
+
+```{r setup, warning=FALSE, message=FALSE}
+
+source("functions.R")
+
+library(fastDummies)
+library(vcd)
+library(tidyverse)
+library(caret)
+library(traineR)
+library(kableExtra)
+library(scales)
+library(ks)
+library(htmltools)
+library(caret)
+library(traineR)
+library(scales)
+library(readr)
+library(plotly)
+library(ggplot2)
+library(corrplot)
+library(GGally)
+library(lubridate)
+library(stringr)
+library(traineR)
+library(caret)
+library(glmnet)
+library(car)
+library(caret)
+library(dplyr)
+library(DT)
+library(ggcorrplot)
+library(randomForest)
+library(caret)
+library(nnet)
+library(ggplot2)
+library(randomForest)
+library(DescTools)
+library(nnet)
+library(readxl)
+library(nortest)
+library(bestNormalize)
+library(car)
+library(factoextra)
+```
+
+```{r}
+data <- read.csv("sacct.csv", sep = "|")
+data <- data %>% mutate(State=gsub("CANCELLED by \\d+$", "CANCELLED", State))
+data <- data[c("ConsumedEnergyRaw","CPUTimeRAW","ReqCPUS",
+               "ReqMem","ReqNodes","ResvCPURAW",
+               "Submit","TimelimitRaw","Partition", 
+               "Priority","QOS","State")]
+
+data$Submit <- ymd_hms(data$Submit)
+data$SubmitHour <- hour(data$Submit)
+data$SubmitWeekday <- wday(data$Submit)
+
+set1 <- data %>% filter(Partition=="andalan" | Partition=="andalan-debug" | Partition=="andalan-long")
+set2 <- data %>% filter(Partition=="dribe" | Partition=="dribe-long" | Partition=="dribe-debug" | Partition=="dribe-test")
+set3 <- data %>% filter(Partition=="nu" | Partition=="nu-all" | Partition=="nu-debug" | Partition=="nu-long" | Partition=="nu-wide")
+set4 <- data %>% filter(Partition=="nukwa" | Partition=="nukwa-debug" | Partition=="nukwa-long" | Partition=="nukwa-v100" | Partition=="nukwa-wide")
+set5 <- data %>% filter(Partition=="kura" | Partition=="kura-all" | Partition=="kura-debug" | Partition=="kura-long" | Partition == "kura-test" | Partition =="kura-wide")
+
+sets <- list(data, set1, set2, set3, set4, set5)
+names(sets) <- c("Data", "Andalan", "Dribe", "Nu", "Nukwa", "Kura")
+rows.count <- sapply(sets, nrow)
+```
+
+# Andalan
+
+## EDA / Mining
+
+```{r}
+EDAandalan(set1,1) #Cada función genera un archivo .csv edaset(i), con i=1:5, i=1:Andalan, ... , i=5:Kura.
+
+edaset1 <- read.csv("edaset1.csv", sep = ",")
+
+edaset1 <- edaset1 %>% select(-c("ReqMem", "ReqNodes", "QOS", "CPUTimeRAW", "ConsumedEnergyRaw", "SubmitHour", "SubmitWeekday"))
+edaset1$Submit <- as_datetime(edaset1$Submit)
+edaset1$Submit <- as.numeric(edaset1$Submit) 
+summary(factor(edaset1$State)) #Andalan solo tiene 13 trabajos cancelados.
+summary(factor(edaset1$ReqCPUS))
+
+#Tukey's Rule
+
+q1 <- quantile(edaset1$CPUPower, 0.25)
+q3 <- quantile(edaset1$CPUPower, 0.75)
+iqr <- q3 - q1
+lim_inf <- q1 - 1.5 * iqr
+lim_sup <- q3 + 1.5 * iqr
+outliers <- edaset1 %>% filter(edaset1$CPUPower < lim_inf | edaset1$CPUPower > lim_sup)
+tail(outliers)
+dim(outliers)
+```
+
+```{r}
+ggplot(edaset1, aes(x = State, y = CPUPower, fill=State)) + geom_boxplot()
+ggplot(edaset1, aes(x = State, y = ReqCPUS, fill=State)) + geom_boxplot() 
+ggplot(edaset1, aes(x = State, y = ResvCPURAW, fill=State)) + geom_boxplot()
+ggplot(edaset1, aes(x = State, y = TimelimitRaw, fill=State)) + geom_boxplot()
+ggplot(edaset1, aes(x = State, y = Priority, fill=State)) + geom_boxplot()
+ggplot(edaset1, aes(x = State, y = Submit, fill=State)) + geom_boxplot()
+
+#Winsorización.
+
+original <- edaset1$CPUPower
+edaset1$CPUPower <- Winsorize(edaset1$CPUPower, quantile(edaset1$CPUPower, probs = c(0.5, 0.95)))
+sum(edaset1$CPUPower != original, na.rm = TRUE)
+
+original1 <- edaset1$ResvCPURAW
+edaset1$ResvCPURAW <- Winsorize(edaset1$ResvCPURAW)
+sum(edaset1$ResvCPURAW != original1, na.rm = TRUE)
+
+original2 <- edaset1$TimelimitRaw
+edaset1$TimelimitRaw <- Winsorize(edaset1$TimelimitRaw)
+sum(edaset1$TimelimitRaw != original2, na.rm = TRUE)
+
+original3 <- edaset1$Priority
+edaset1$Priority <- Winsorize(edaset1$Priority)
+sum(edaset1$Priority != original3, na.rm = TRUE)
+ 
+ggplot(edaset1, aes(x = State, y = CPUPower, fill=State)) + geom_boxplot()
+ggplot(edaset1, aes(y= CPUPower)) + geom_boxplot()
+ggplot(edaset1, aes(x = State, y = ReqCPUS, fill=State)) + geom_boxplot() 
+ggplot(edaset1, aes(x = State, y = ResvCPURAW, fill=State)) + geom_boxplot()
+ggplot(edaset1, aes(x = State, y = TimelimitRaw, fill=State)) + geom_boxplot()
+ggplot(edaset1, aes(x = State, y = Priority, fill=State)) + geom_boxplot()
+ggplot(edaset1, aes(x = State, y = Submit, fill=State)) + geom_boxplot()
+
+q1 <- quantile(edaset1$Submit, 0.25)
+q3 <- quantile(edaset1$Submit, 0.75)
+iqr <- q3 - q1
+lim_inf <- q1 - 1.5 * iqr
+lim_sup <- q3 + 1.5 * iqr
+outliersSubmit <- edaset1 %>% filter(edaset1$Submit < lim_inf | edaset1$Submit > lim_sup)
+edaset1 <- edaset1 %>% filter((edaset1$Submit >= lim_inf) & (edaset1$Submit <= lim_sup))
+
+edaset1 <- edaset1 %>% select_if(is.numeric) 
+
+lm_model <- lm(CPUPower~ ., data = edaset1)
+vif(lm_model)
+
+edaset1 <- as.data.frame(scale(edaset1, center=T, scale=T)) 
+edaset1 <- edaset1 %>% select(CPUPower, everything())
+  
+eliminados <- dim(set1)[1]-dim(edaset1)[1] 
+porcentaje <- eliminados/dim(set1)[1] 
+```
+
+## Correlation
+
+```{r}
+Corrandalan(edaset1)
+```
+
+## Models
+
+```{r}
+set.seed(1234)
+Models(edaset1)
+```
+
+## Calibration
+
+```{r}
+Calibration.RF(edaset1)
+```
+
+```{r}
+muestra <- createDataPartition(y = edaset1$CPUPower, p = 0.80, list = F)
+ttraining <- edaset1[muestra, ]
+ttesting <- edaset1[-muestra, ]  
+
+set.seed(123)
+modelorf <- randomForest(CPUPower ~ ., ttraining, mtry = 4, ntree = 100, importance = TRUE)
+prediccionesrf <- predict(modelorf, ttesting)
+erroresrf <- indices.precision(prediccionesrf,ttesting$CPUPower,cantidad.variables.predictoras=(ncol(ttesting)-1))
+erroresrf
+
+plot.real.prediccion(prediccionesrf, ttesting$CPUPower)
+modelorf
+importance(modelorf)
+varImpPlot(modelorf)
+```
+
+```{r}
+Calibrationknn(edaset1)
+```
+
+```{r}
+muestra <- createDataPartition(y = edaset1$CPUPower, p = 0.80, list = F)
+ttraining <- edaset1[muestra, ]
+ttesting <- edaset1[-muestra, ]  
+
+set.seed(123)
+knnmodelo <- train.knn(CPUPower~.,ttraining, kmax = floor(sqrt(nrow(ttraining))),kernel = "biweight")
+prediccionknn <- predict(knnmodelo, ttesting)
+erroresknn <- indices.precision(prediccionknn$prediction,ttesting$CPUPower, cantidad.variables.predictoras=(ncol(ttesting)-1))
+
+erroresknn
+plot.real.prediccion(prediccionknn$prediction, ttesting$CPUPower)
+knnmodelo
+```
+
+# Dribe
+
+## EDA / Mining
+
+```{r}
+EDAdribe(set2,2)
+
+edaset2 <- read.csv("edaset2.csv", sep = ",")
+edaset2 <- edaset2 %>% select(-c("ReqNodes", "CPUTimeRAW", "ConsumedEnergyRaw", "SubmitHour", "SubmitWeekday"))
+edaset2$Submit <- as_datetime(edaset2$Submit)
+edaset2$Submit <- as.numeric(edaset2$Submit) 
+edaset2$QOS <- as.factor(edaset2$QOS)
+summary(factor(edaset2$State)) 
+
+q1 <- quantile(edaset2$CPUPower, 0.25)
+q3 <- quantile(edaset2$CPUPower, 0.75)
+
+iqr <- q3 - q1
+lim_inf <- q1 - 1.5 * iqr
+lim_sup <- q3 + 1.5 * iqr
+outliers <- edaset2 %>% filter(edaset2$CPUPower < lim_inf | edaset2$CPUPower > lim_sup)
+head(outliers)
+dim(outliers)
+dim(edaset2)
+```
+
+```{r}
+ggplot(edaset2, aes(x = State, y = CPUPower, fill=State)) + geom_boxplot()
+ggplot(edaset2, aes(x = State, y = ReqCPUS, fill=State)) + geom_boxplot() 
+ggplot(edaset2, aes(x = State, y = ResvCPURAW, fill=State)) + geom_boxplot()
+ggplot(edaset2, aes(x = State, y = TimelimitRaw, fill=State)) + geom_boxplot()
+ggplot(edaset2, aes(x = State, y = Priority, fill=State)) + geom_boxplot()
+
+original <- edaset2$CPUPower 
+edaset2$CPUPower <- Winsorize(edaset2$CPUPower)
+sum(edaset2$CPUPower != original, na.rm = TRUE)
+
+original2 <- edaset2$ReqMem 
+edaset2$ReqMem <- Winsorize(edaset2$ReqMem)
+sum(edaset2$ReqMem != original2, na.rm = TRUE)
+
+original3 <- edaset2$ResvCPURAW
+edaset2$ResvCPURAW <- Winsorize(edaset2$ResvCPURAW)
+sum(edaset2$ResvCPURAW != original3, na.rm = TRUE)
+
+original4 <- edaset2$TimelimitRaw
+edaset2$TimelimitRaw <- Winsorize(edaset2$TimelimitRaw)
+sum(edaset2$TimelimitRaw != original4, na.rm = TRUE)
+
+original5 <- edaset2$Priority
+edaset2$Priority <- Winsorize(edaset2$Priority)
+sum(edaset2$Priority != original5, na.rm = TRUE)
+
+original6 <- edaset2$Submit
+edaset2$Submit <- Winsorize(edaset2$Submit)
+sum(edaset2$Submit != original6, na.rm = TRUE)
+
+ggplot(edaset2, aes(x = State, y = CPUPower, fill=State)) + geom_boxplot()
+
+q1 <- quantile(edaset2$TimelimitRaw, 0.25)
+q3 <- quantile(edaset2$TimelimitRaw, 0.75)
+iqr <- q3 - q1
+lim_inf <- q1 - 1.5 * iqr
+lim_sup <- q3 + 1.5 * iqr
+outliersTimelimitRaw <- edaset2 %>% filter(edaset2$TimelimitRaw < lim_inf | edaset2$TimelimitRaw > lim_sup)
+edaset2 <- edaset2 %>% filter((edaset2$TimelimitRaw >= lim_inf) & (edaset2$TimelimitRaw <= lim_sup))
+
+ggplot(edaset2, aes(x = State, y = CPUPower, fill=State)) + geom_boxplot()
+ggplot(edaset2, aes(x = State, y = ReqCPUS, fill=State)) + geom_boxplot() 
+ggplot(edaset2, aes(x = State, y = ResvCPURAW, fill=State)) + geom_boxplot()
+ggplot(edaset2, aes(x = State, y = TimelimitRaw, fill=State)) + geom_boxplot()
+ggplot(edaset2, aes(x = State, y = Priority, fill=State)) + geom_boxplot()
+
+edaset2f <- edaset2 %>% select_if(is.factor)
+edaset2n <- edaset2 %>% select_if(is.numeric) 
+edaset2n$CPUPower <- sqrt(edaset2n$CPUPower)
+edaset2n <- as.data.frame(scale(edaset2n, center=T, scale=T)) 
+edaset2n <- edaset2n %>% select(CPUPower, everything())
+edaset2fn <- cbind(edaset2f,edaset2n)
+eliminados <- dim(set2)[1]-dim(edaset2)[1] 
+porcentaje <- eliminados/dim(set2)[1] 
+```
+
+## Correlation
+
+```{r}
+Corr<- function(set) {
+  
+  
+  pairs <- ggpairs(set)
+  
+  m.correlacion.pearson <- cor(set)
+  g15 <- ggcorrplot(m.correlacion.pearson,show.diag = F,type='lower', lab = TRUE, lab_size=3) + scale_fill_gradient2(low='red',high='blue',breaks=c(-1, -0.5,0,0.5,1),limit=c(-1,1),name='Pearson correlation')
+  
+  m.correlacion.spearman <- cor(set, method = "spearman")
+  g16 <- ggcorrplot(m.correlacion.spearman,show.diag = F,type='lower', lab = TRUE, lab_size=3) + scale_fill_gradient2(low='red',high='blue',breaks=c(-1, -0.5,0,0.5,1),limit=c(-1,1),name='Correlation Spearman')
+  
+list(pairs, m.correlacion.pearson, m.correlacion.spearman, g15, g16)
+}
+
+Corrdribe(edaset2n)
+```
+
+## Models
+
+```{r}
+set.seed(1234)
+Models(edaset2fn)
+```
+
+## Calibration
+
+```{r}
+Calibration.RF(edaset2fn)
+```
+
+```{r}
+muestra <- createDataPartition(y = edaset2fn$CPUPower, p = 0.80, list = F)
+ttraining <- edaset2fn[muestra, ]
+ttesting <- edaset2fn[-muestra, ]  
+
+set.seed(123)
+modelorf <- randomForest(CPUPower ~ ., ttraining, mtry = 4, ntree = 100, importance = TRUE)
+prediccionesrf <- predict(modelorf, ttesting)
+erroresrf <- indices.precision(prediccionesrf,ttesting$CPUPower, cantidad.variables.predictoras=(ncol(ttesting)-1))
+
+erroresrf
+plot.real.prediccion(prediccionesrf, ttesting$CPUPower)
+modelorf
+importance(modelorf)
+varImpPlot(modelorf)
+```
+
+```{r}
+Calibrationknn(edaset2fn)
+```
+
+```{r}
+muestra <- createDataPartition(y = edaset2fn$CPUPower, p = 0.80, list = F)
+ttraining <- edaset2fn[muestra, ]
+ttesting <- edaset2fn[-muestra, ]  
+
+set.seed(123)
+knnmodelo <- train.knn(CPUPower~.,ttraining, kmax = floor(sqrt(nrow(ttraining))),kernel = "inv")
+prediccionknn <- predict(knnmodelo, ttesting)
+erroresknn <- indices.precision(prediccionknn$prediction,ttesting$CPUPower, cantidad.variables.predictoras=(ncol(ttesting)-1))
+
+erroresknn
+plot.real.prediccion(prediccionknn$prediction, ttesting$CPUPower)
+knnmodelo
+```
+
+# Kura
+
+## EDA / Mining
+
+```{r}
+EDAkura(set5,5)
+edaset5 <- read.csv("edaset5.csv", sep = ",")
+edaset5 <- edaset5 %>% select(-c("CPUTimeRAW", "ConsumedEnergyRaw", "SubmitHour", "SubmitWeekday"))
+edaset5$Submit <- as_datetime(edaset5$Submit)
+edaset5$Submit <- as.numeric(edaset5$Submit) 
+edaset5$QOS <- as.factor(edaset5$QOS)
+summary(factor(edaset5$State)) 
+
+q1 <- quantile(edaset5$CPUPower, 0.25)
+q3 <- quantile(edaset5$CPUPower, 0.75)
+
+iqr <- q3 - q1
+lim_inf <- q1 - 1.5 * iqr
+lim_sup <- q3 + 1.5 * iqr
+outliers <- edaset5 %>% filter(edaset5$CPUPower < lim_inf | edaset5$CPUPower > lim_sup)
+head(outliers)
+dim(outliers)
+dim(edaset5)
+
+```
+
+```{r}
+ggplot(edaset5, aes(x = State, y = CPUPower, fill=State)) + geom_boxplot()
+ggplot(edaset5, aes(x = State, y = ReqCPUS, fill=State)) + geom_boxplot() 
+ggplot(edaset5, aes(x = State, y = ResvCPURAW, fill=State)) + geom_boxplot()
+ggplot(edaset5, aes(x = State, y = TimelimitRaw, fill=State)) + geom_boxplot()
+ggplot(edaset5, aes(x = State, y = Priority, fill=State)) + geom_boxplot()
+
+original <- edaset5$CPUPower
+edaset5$CPUPower <- Winsorize(edaset5$CPUPower)
+sum(edaset5$CPUPower != original, na.rm = TRUE)
+
+original2 <- edaset5$ReqCPUS
+edaset5$ReqCPUS <- Winsorize(edaset5$ReqCPUS)
+sum(edaset5$ReqCPUS != original2, na.rm = TRUE)
+
+original3 <- edaset5$ResvCPURAW
+edaset5$ResvCPURAW <- Winsorize(edaset5$ResvCPURAW)
+sum(edaset5$ResvCPURAW != original3, na.rm = TRUE)
+
+original4 <- edaset5$TimelimitRaw
+edaset5$TimelimitRaw <- Winsorize(edaset5$TimelimitRaw)
+sum(edaset5$TimelimitRaw != original4, na.rm = TRUE)
+
+original5 <- edaset5$Priority
+edaset5$Priority <- Winsorize(edaset5$Priority)
+sum(edaset5$Priority != original5, na.rm = TRUE)
+
+original6 <- edaset5$Submit
+edaset5$Submit <- Winsorize(edaset5$Submit)
+sum(edaset5$Submit != original6, na.rm = TRUE)
+
+ggplot(edaset5, aes(x = State, y = CPUPower, fill=State)) + geom_boxplot()
+ggplot(edaset5, aes(x = State, y = ReqCPUS, fill=State)) + geom_boxplot() 
+ggplot(edaset5, aes(x = State, y = ResvCPURAW, fill=State)) + geom_boxplot()
+ggplot(edaset5, aes(x = State, y = TimelimitRaw, fill=State)) + geom_boxplot()
+ggplot(edaset5, aes(x = State, y = Priority, fill=State)) + geom_boxplot()
+
+edaset5f <- edaset5 %>% select_if(is.factor)
+edaset5n <- edaset5 %>% select_if(is.numeric) 
+edaset5n$CPUPower <- sqrt(edaset5n$CPUPower)
+edaset5n <- as.data.frame(scale(edaset5n, center=T, scale=T)) 
+edaset5n <- edaset5n %>% select(CPUPower, everything())
+edaset5fn <- cbind(edaset5f,edaset5n)
+eliminados <- dim(set5)[1]-dim(edaset5)[1] 
+porcentaje <- eliminados/dim(set5)[1] 
+```
+
+## Correlation
+
+```{r}
+Corrkura(edaset5n)
+```
+
+## Models
+
+```{r}
+set.seed(1234)
+Models(edaset5fn) 
+```
+
+## Calibration
+
+```{r}
+Calibration.RF(edaset5fn)
+```
+
+```{r}
+muestra <- createDataPartition(y = edaset5fn$CPUPower, p = 0.80, list = F)
+ttraining <- edaset5fn[muestra, ]
+ttesting <- edaset5fn[-muestra, ]  
+
+set.seed(123)
+modelorf <- randomForest(CPUPower ~ ., ttraining, mtry = 4, ntree = 100, importance = TRUE)
+prediccionesrf <- predict(modelorf, ttesting)
+erroresrf <- indices.precision(prediccionesrf,ttesting$CPUPower, cantidad.variables.predictoras=(ncol(ttesting)-1))
+
+erroresrf
+plot.real.prediccion(prediccionesrf, ttesting$CPUPower)
+modelorf
+importance(modelorf)
+varImpPlot(modelorf)
+```
+
+```{r}
+Calibrationknn(edaset5fn)
+```
+
+```{r}
+muestra <- createDataPartition(y = edaset5fn$CPUPower, p = 0.80, list = F)
+ttraining <- edaset5fn[muestra, ]
+ttesting <- edaset5fn[-muestra, ]  
+
+set.seed(123)
+knnmodelo <- train.knn(CPUPower~.,ttraining, kmax = floor(sqrt(nrow(ttraining))),kernel = "inv")
+prediccionknn <- predict(knnmodelo, ttesting)
+erroresknn <- indices.precision(prediccionknn$prediction,ttesting$CPUPower, cantidad.variables.predictoras=(ncol(ttesting)-1))
+
+erroresknn
+plot.real.prediccion(prediccionknn$prediction, ttesting$CPUPower)
+knnmodelo
+```
+
+# Nu.
+
+## EDA / Mining
+
+```{r}
+EDAnu(set3,3)
+
+edaset3 <- read.csv("edaset3.csv", sep = ",")
+edaset3 <- edaset3 %>% select(-c("CPUTimeRAW", "ConsumedEnergyRaw", "SubmitHour", "SubmitWeekday", "ReqMem"))
+edaset3$Submit <- as_datetime(edaset3$Submit)
+edaset3$Submit <- as.numeric(edaset3$Submit) 
+edaset3$QOS <- as.factor(edaset3$QOS)
+
+q1 <- quantile(edaset3$CPUPower, 0.25)
+q3 <- quantile(edaset3$CPUPower, 0.75)
+
+iqr <- q3 - q1
+lim_inf <- q1 - 1.5 * iqr
+lim_sup <- q3 + 1.5 * iqr
+outliers <- edaset3 %>% filter(edaset3$CPUPower < lim_inf | edaset3$CPUPower > lim_sup)
+head(outliers)
+dim(outliers)
+dim(edaset3)
+
+```
+
+```{r}
+ggplot(edaset3, aes(x = State, y = CPUPower, fill=State)) + geom_boxplot()
+ggplot(edaset3, aes(x = State, y = ReqCPUS, fill=State)) + geom_boxplot() 
+ggplot(edaset3, aes(x = State, y = ResvCPURAW, fill=State)) + geom_boxplot()
+ggplot(edaset3, aes(x = State, y = TimelimitRaw, fill=State)) + geom_boxplot()
+ggplot(edaset3, aes(x = State, y = Priority, fill=State)) + geom_boxplot()
+
+
+original <- edaset3$CPUPower
+edaset3$CPUPower <- Winsorize(edaset3$CPUPower)
+sum(edaset3$CPUPower != original, na.rm = TRUE)
+
+edaset3$ReqCPUS <- Winsorize(edaset3$ReqCPUS)
+
+original2 <- edaset3$ResvCPURAW
+edaset3$ResvCPURAW <- Winsorize(edaset3$ResvCPURAW)
+sum(edaset3$ResvCPURAW != original2, na.rm = TRUE)
+
+original3 <- edaset3$TimelimitRaw
+edaset3$TimelimitRaw <- Winsorize(edaset3$TimelimitRaw)
+sum(edaset3$TimelimitRaw != original3, na.rm = TRUE)
+
+original4 <- edaset3$Priority
+edaset3$Priority <- Winsorize(edaset3$Priority)
+sum(edaset3$Priority != original4, na.rm = TRUE)
+
+original5 <- edaset3$Submit
+edaset3$Submit <- Winsorize(edaset3$Submit)
+sum(edaset3$Submit != original5, na.rm = TRUE)
+
+ggplot(edaset3, aes(x = State, y = CPUPower, fill=State)) + geom_boxplot()
+ggplot(edaset3, aes(x = State, y = ReqCPUS, fill=State)) + geom_boxplot() 
+ggplot(edaset3, aes(x = State, y = ResvCPURAW, fill=State)) + geom_boxplot()
+ggplot(edaset3, aes(x = State, y = TimelimitRaw, fill=State)) + geom_boxplot()
+ggplot(edaset3, aes(x = State, y = Priority, fill=State)) + geom_boxplot()
+
+q1 <- quantile(edaset3$TimelimitRaw, 0.25)
+q3 <- quantile(edaset3$TimelimitRaw, 0.75)
+iqr <- q3 - q1
+lim_inf <- q1 - 1.5 * iqr
+lim_sup <- q3 + 1.5 * iqr
+outliersTLR <- edaset3 %>% filter(edaset3$TimelimitRaw < lim_inf | edaset3$TimelimitRaw > lim_sup)
+dim(outliersTLR)
+dim(edaset3)
+edaset3 <- edaset3 %>% filter((edaset3$TimelimitRaw >= lim_inf) & (edaset3$TimelimitRaw <= lim_sup))
+
+edaset3f <- edaset3 %>% select_if(is.factor)
+edaset3n <- edaset3 %>% select_if(is.numeric) 
+edaset3n$ResvCPURAW <- log1p(edaset3n$ResvCPURAW)
+edaset3n$TimelimitRaw <- sqrt(edaset3n$TimelimitRaw)
+
+edaset3n <- as.data.frame(scale(edaset3n, center=T, scale=T)) 
+edaset3n <- edaset3n %>% select(CPUPower, everything())
+edaset3fn <- cbind(edaset3f,edaset3n)
+```
+
+```{r}
+Corrnu(edaset3n)
+```
+
+```{r}
+set.seed(1234)
+Models(edaset3fn)
+```
+
+## Calibration
+
+```{r}
+Calibration.RF(edaset3fn)
+```
+
+```{r}
+muestra <- createDataPartition(y = edaset3fn$CPUPower, p = 0.80, list = F)
+ttraining <- edaset3fn[muestra, ]
+ttesting <- edaset3fn[-muestra, ]  
+
+set.seed(1234)
+modelorf <- randomForest(CPUPower ~ ., ttraining, mtry = 4, ntree = 100, importance = TRUE)
+prediccionesrf <- predict(modelorf, ttesting)
+erroresrf <- indices.precision(prediccionesrf,ttesting$CPUPower, cantidad.variables.predictoras=(ncol(ttesting)-1))
+
+erroresrf
+plot.real.prediccion(prediccionesrf, ttesting$CPUPower)
+modelorf
+importance(modelorf)
+varImpPlot(modelorf)
+```
+
+```{r}
+Calibrationknn(edaset3fn)
+```
+
+```{r}
+muestra <- createDataPartition(y = edaset3fn$CPUPower, p = 0.80, list = F)
+ttraining <- edaset3fn[muestra, ]
+ttesting <- edaset3fn[-muestra, ]  
+
+set.seed(1234)
+knnmodelo <- train.knn(CPUPower~.,ttraining, kmax = floor(sqrt(nrow(ttraining))),kernel = "inv")
+prediccionknn <- predict(knnmodelo, ttesting)
+erroresknn <- indices.precision(prediccionknn$prediction,ttesting$CPUPower, cantidad.variables.predictoras=(ncol(ttesting)-1))
+
+erroresknn
+plot.real.prediccion(prediccionknn$prediction, ttesting$CPUPower)
+```
+
+# Nukwa
+
+## EDA / Mining 
+
+```{r}
+EDAnukwa(set4,4)
+
+edaset4 <- read.csv("edaset4.csv", sep = ",")
+edaset4 <- edaset4 %>% select(-c("CPUTimeRAW", "ConsumedEnergyRaw", "SubmitHour", "SubmitWeekday", "ReqCPUS", "ReqNodes", "QOS"))
+edaset4$Submit <- as_datetime(edaset4$Submit)
+edaset4$Submit <- as.numeric(edaset4$Submit) 
+
+
+q1 <- quantile(edaset4$CPUPower, 0.25)
+q3 <- quantile(edaset4$CPUPower, 0.75)
+
+iqr <- q3 - q1
+lim_inf <- q1 - 1.5 * iqr
+lim_sup <- q3 + 1.5 * iqr
+outliers <- edaset4 %>% filter(edaset4$CPUPower < lim_inf | edaset4$CPUPower > lim_sup)
+head(outliers)
+dim(outliers)
+dim(edaset4)
+```
+
+```{r}
+ggplot(edaset4, aes(x = State, y = CPUPower, fill=State)) + geom_boxplot()
+ggplot(edaset4, aes(x = State, y = ResvCPURAW, fill=State)) + geom_boxplot()
+ggplot(edaset4, aes(x = State, y = TimelimitRaw, fill=State)) + geom_boxplot()
+ggplot(edaset4, aes(x = State, y = Priority, fill=State)) + geom_boxplot()
+
+edaset4CPUPower <- Winsorize(edaset4$CPUPower)
+edaset4$ResvCPURAW <- Winsorize(edaset4$ResvCPURAW)
+edaset4$TimelimitRaw <- Winsorize(edaset4$TimelimitRaw)
+edaset4$Priority <- Winsorize(edaset4$Priority)
+edaset4$Submit <- Winsorize(edaset4$Submit)
+
+q1 <- quantile(edaset4$Priority, 0.25)
+q3 <- quantile(edaset4$Priority, 0.75)
+iqr <- q3 - q1
+lim_inf <- q1 - 1.5 * iqr
+lim_sup <- q3 + 1.5 * iqr
+outliersPriority <- edaset4 %>% filter(edaset4$Priority < lim_inf | edaset4$Priority > lim_sup)
+dim(outliersPriority)
+dim(edaset4)
+edaset4 <- edaset4 %>% filter((edaset4$Priority >= lim_inf) & (edaset4$Priority <= lim_sup))
+
+ggplot(edaset4, aes(x = State, y = CPUPower, fill=State)) + geom_boxplot()
+ggplot(edaset4, aes(x = State, y = ResvCPURAW, fill=State)) + geom_boxplot()
+ggplot(edaset4, aes(x = State, y = TimelimitRaw, fill=State)) + geom_boxplot()
+ggplot(edaset4, aes(x = State, y = Priority, fill=State)) + geom_boxplot()
+
+edaset4n <- edaset4 %>% select_if(is.numeric) 
+edaset4n$ResvCPURAW <- log1p(edaset4n$ResvCPURAW)
+edaset4n$TimelimitRaw <- sqrt(edaset4n$TimelimitRaw)
+
+edaset4n <- as.data.frame(scale(edaset4n, center=T, scale=T)) 
+edaset4n <- edaset4n %>% select(CPUPower, everything())
+```
+
+## Correlation
+
+```{r}
+Corrnukwa(edaset4n)
+```
+
+## Models
+
+```{r}
+set.seed(1234)
+Models(edaset4n)
+```
+
+## Calibration
+
+```{r}
+Calibration.RF(edaset4n)
+```
+
+```{r}
+muestra <- createDataPartition(y = edaset4n$CPUPower, p = 0.80, list = F)
+ttraining <- edaset4n[muestra, ]
+ttesting <- edaset4n[-muestra, ]  
+
+set.seed(1234)
+modelorf <- randomForest(CPUPower ~ ., ttraining, mtry = 4, ntree = 100, importance = TRUE)
+prediccionesrf <- predict(modelorf, ttesting)
+erroresrf <- indices.precision(prediccionesrf,ttesting$CPUPower, cantidad.variables.predictoras=(ncol(ttesting)-1))
+
+erroresrf
+plot.real.prediccion(prediccionesrf, ttesting$CPUPower)
+modelorf
+importance(modelorf)
+varImpPlot(modelorf)
+```
+
+```{r}
+Calibrationknn(edaset4n)
+Cross.knn(edaset4n)
+```
+
+```{r}
+muestra <- createDataPartition(y = edaset4n$CPUPower, p = 0.80, list = F)
+ttraining <- edaset4n[muestra, ]
+ttesting <- edaset4n[-muestra, ]  
+
+knnmodelo <- train.knn(CPUPower~.,ttraining, kmax = floor(sqrt(nrow(ttraining))),kernel = "triweight")
+prediccionknn <- predict(knnmodelo, ttesting)
+erroresknn <- indices.precision(prediccionknn$prediction,ttesting$CPUPower, cantidad.variables.predictoras=(ncol(ttesting)-1))
+
+set.seed(1234)
+erroresknn
+plot.real.prediccion(prediccionknn$prediction, ttesting$CPUPower)
+knnmodelo
+```
+
+## Cross Validation 10-5
+
+```{r}
+CrossMet(edaset1)
+```
+
+```{r}
+CrossMet(edaset2fn)
+```
+
+```{r}
+CrossMet(edaset3fn)
+```
+
+```{r}
+CrossMet(edaset4n)
+```
+
+```{r}
+CrossMet(edaset5fn)
+```
+
+
+```{r}
+r1 <- Calibrationknn(edaset1)
+r2 <- Calibrationknn(edaset2fn)
+r3 <- Calibrationknn(edaset3fn)
+r4 <- Calibrationknn(edaset4n)
+r5 <- Calibrationknn(edaset5fn)
+
+matriz.errores1 <- r1$errors
+matriz.errores2 <- r2$errors
+matriz.errores3 <- r3$errors
+matriz.errores4 <- r4$errors
+matriz.errores5 <- r5$errors
+
+colores <- rainbow(ncol(matriz.errores1))  
+
+par(mfrow = c(2, 3), mar = c(4, 4, 3, 1)) 
+
+matrices <- list(matriz.errores1, matriz.errores2, matriz.errores3, matriz.errores4, matriz.errores5)
+titulos <- c("Andalan", "Dribe", "Nu", "Nukwa", "Kurá")
+
+for (i in 1:5) {
+  matplot(matrices[[i]], type = "l", col = colores, lty = 1, lwd = 2,
+          xlab = "Iteration", ylab = "RMSE", main = titulos[i])
+  
+  legend("topright", legend = c("RECTANGULAR", "TRIANGULAR", "EPANECHNIKOV", "BIWEIGHT",
+                                "TRIWEIGHT", "COS", "INV", "GAUSSIAN", "OPTIMAL"),
+         col = colores, lty = 1, lwd = 2, cex = 0.7)
+}
+```
+
+```{r}
+r1 <- Calibrationknn(edaset1)
+r2 <- Calibrationknn(edaset2fn)
+r3 <- Calibrationknn(edaset3fn)
+r4 <- Calibrationknn(edaset4n)
+r5 <- Calibrationknn(edaset5fn)
+
+df.error1 <- r1[[2]]
+df.error2 <- r2[[2]]
+df.error3 <- r3[[2]]
+df.error4 <- r4[[2]]
+df.error5 <- r5[[2]]
+
+ggplot(df.error1, aes(x = metodo, y = error, fill = metodo)) +
+ geom_bar(stat = "identity") +
+geom_text(aes(label = round(error, 2)), vjust = -0.7, size = 4) +  
+scale_fill_manual(values = colores, guide = "none") +  
+labs(title = "RMSE por iteración de KNN con distintos kernels",
+    x = "Kernel",
+   y = "RMSE") +
+theme_minimal() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(df.error2, aes(x = metodo, y = error, fill = metodo)) +
+ geom_bar(stat = "identity") +
+geom_text(aes(label = round(error, 2)), vjust = -0.7, size = 4) +  # tamaño de texto más pequeño
+scale_fill_manual(values = colores, guide = "none") +  # sin leyenda
+labs(title = "RMSE por iteración de KNN con distintos kernels",
+    x = "Kernel",
+   y = "RMSE") +
+theme_minimal() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(df.error3, aes(x = metodo, y = error, fill = metodo)) +
+ geom_bar(stat = "identity") +
+geom_text(aes(label = round(error, 2)), vjust = -0.7, size = 4) +  # tamaño de texto más pequeño
+scale_fill_manual(values = colores, guide = "none") +  # sin leyenda
+labs(title = "RMSE por iteración de KNN con distintos kernels",
+    x = "Kernel",
+   y = "RMSE") +
+theme_minimal() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(df.error4, aes(x = metodo, y = error, fill = metodo)) +
+ geom_bar(stat = "identity") +
+geom_text(aes(label = round(error, 2)), vjust = -0.7, size = 4) +  # tamaño de texto más pequeño
+scale_fill_manual(values = colores, guide = "none") +  # sin leyenda
+labs(title = "RMSE por iteración de KNN con distintos kernels",
+    x = "Kernel",
+   y = "RMSE") +
+theme_minimal() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(df.error5, aes(x = metodo, y = error, fill = metodo)) +
+ geom_bar(stat = "identity") +
+geom_text(aes(label = round(error, 2)), vjust = -0.7, size = 4) +  # tamaño de texto más pequeño
+scale_fill_manual(values = colores, guide = "none") +  # sin leyenda
+labs(title = "RMSE por iteración de KNN con distintos kernels",
+    x = "Kernel",
+   y = "RMSE") +
+theme_minimal() +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```    
+
+```{r}
+colores <- rainbow(ncol(matriz.errores1)) 
+
+par(mfrow = c(2, 3), mar = c(4, 4, 3, 1))
+
+matrices <- list(matriz.errores1, matriz.errores2, matriz.errores3, matriz.errores4, matriz.errores5)
+titulos <- c("Andalan", "Dribe", "Nu", "Nukwa", "Kurá")
+
+for (i in 1:5) {
+  matplot(matrices[[i]], type = "l", col = colores, lty = 1, lwd = 2,
+          xlab = "Iteración", ylab = "RMSE", main = titulos[i])
+  
+  legend("topright", legend = colnames(matrices[[i]]), col = colores, 
+         lty = 1, lwd = 2, cex = 0.7)
+}
+
+```
+
+```{r}
+df.error1 <- r1[[2]]
+df.error2 <- r2[[2]]
+df.error3 <- r3[[2]]
+df.error4 <- r4[[2]]
+df.error5 <- r5[[2]]
+
+  ggplot(df.error1, aes(x = metodo, y = error, fill = metodo)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = round(error, 2)), vjust = -1, size = 2) +
+    scale_fill_grey(start = 0.3, end = 0.9) +
+    labs(title = "RMSE",
+         x = "Parameters",
+         y = "RMSE") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none") 
+
+    ggplot(df.error2, aes(x = metodo, y = error, fill = metodo)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = round(error, 2)), vjust = -1, size = 2) +
+    scale_fill_grey(start = 0.3, end = 0.9) +
+    labs(title = "RMSE",
+         x = "Parameters",
+         y = "RMSE") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none")  
+    
+      ggplot(df.error3, aes(x = metodo, y = error, fill = metodo)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = round(error, 2)), vjust = -1, size = 2) +
+    scale_fill_grey(start = 0.3, end = 0.9) +
+    labs(title = "RMSE",
+         x = "Parameters",
+         y = "RMSE") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none") 
+      
+        ggplot(df.error4, aes(x = metodo, y = error, fill = metodo)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = round(error, 2)), vjust = -1, size = 2) +
+    scale_fill_grey(start = 0.3, end = 0.9) +
+    labs(title = "RMSE",
+         x = "Parameters",
+         y = "RMSE") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none") 
+        
+          ggplot(df.error5, aes(x = metodo, y = error, fill = metodo)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = round(error, 2)), vjust = -1, size = 2) +
+    scale_fill_grey(start = 0.3, end = 0.9) +
+    labs(title = "RMSE",
+         x = "Parameters",
+         y = "RMSE") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none")  
+```   
+
+# Modelos finales
+
+## Andalan.
+
+```{r}
+# KNN
+sample <- createDataPartition(edaset1$CPUPower, p=0.8, list=F)
+ttraining <- edaset1[sample,]
+ttesting <- edaset1[-sample,]
+  
+knn.op <- train.knn(CPUPower~.,ttraining, kmax = floor(sqrt(nrow(ttraining))),kernel = "optimal")
+knn.prediction <- predict(knn.op, ttesting)
+error <- indices.precision(knn.prediction$prediction, ttesting$CPUPower,cantidad.variables.predictoras=(ncol(ttesting)-1))
+g <- plot.real.prediccion(knn.prediction$prediction, ttesting$CPUPower)
+error
+g
+
+# RF 
+modelo.rf <- randomForest(CPUPower ~ ., ttraining, mtry = 2, ntree = 10, importance = TRUE)
+rf.prediction <- predict(modelo.rf, ttesting)
+error1 <- indices.precision(rf.prediction, ttesting$CPUPower,cantidad.variables.predictoras=(ncol(ttesting)-1))
+g1 <- plot.real.prediccion(rf.prediction, ttesting$CPUPower)
+error1
+g1
+```
+
+## Dribe
+
+```{r}
+sample <- createDataPartition(edaset2fn$CPUPower, p=0.8, list=F)
+ttraining <- edaset2fn[sample,]
+ttesting <- edaset2fn[-sample,]
+
+# KNN
+knn.inv <- train.knn(CPUPower~.,ttraining, kmax = floor(sqrt(nrow(ttraining))),kernel = "inv")
+knn.prediction <- predict(knn.inv, ttesting)
+error <- indices.precision(knn.prediction$prediction, ttesting$CPUPower,cantidad.variables.predictoras=(ncol(ttesting)-1))
+g <- plot.real.prediccion(knn.prediction$prediction, ttesting$CPUPower)
+error
+g
+
+# RF 
+modelo.rf <- randomForest(CPUPower ~ ., ttraining, mtry = 4, ntree = 100, importance = TRUE)
+rf.prediction <- predict(modelo.rf, ttesting)
+error1 <- indices.precision(rf.prediction, ttesting$CPUPower,cantidad.variables.predictoras=(ncol(ttesting)-1))
+g1 <- plot.real.prediccion(rf.prediction, ttesting$CPUPower)
+error1
+g1
+```
+
+## Nu
+
+```{r}
+sample <- createDataPartition(edaset3fn$CPUPower, p=0.8, list=F)
+ttraining <- edaset3fn[sample,]
+ttesting <- edaset3fn[-sample,]
+
+# KNN
+knn.op <- train.knn(CPUPower~.,ttraining, kmax = floor(sqrt(nrow(ttraining))),kernel = "optimal")
+knn.prediction <- predict(knn.op, ttesting)
+error <- indices.precision(knn.prediction$prediction, ttesting$CPUPower,cantidad.variables.predictoras=(ncol(ttesting)-1))
+g <- plot.real.prediccion(knn.prediction$prediction, ttesting$CPUPower)
+error
+g
+
+# RF 
+modelo.rf <- randomForest(CPUPower ~ ., ttraining, mtry = 4, ntree = 100, importance = TRUE)
+rf.prediction <- predict(modelo.rf, ttesting)
+error1 <- indices.precision(rf.prediction, ttesting$CPUPower,cantidad.variables.predictoras=(ncol(ttesting)-1))
+g1 <- plot.real.prediccion(rf.prediction, ttesting$CPUPower)
+error1
+g1
+```
+
+## Nukwa
+
+```{r}
+sample <- createDataPartition(edaset4n$CPUPower, p=0.8, list=F)
+ttraining <- edaset4n[sample,]
+ttesting <- edaset4n[-sample,]
+
+# DT
+modelo.ar <- rpart(CPUPower ~ ., data = ttraining, 
+                   method = "anova", 
+                   control = rpart.control(cp = 0.001, maxdepth = 10))
+rf.prediction <- predict(modelo.ar, newdata = ttesting)
+error <- indices.precision(rf.prediction, ttesting$CPUPower,cantidad.variables.predictoras=(ncol(ttesting)-1))
+g <- plot.real.prediccion(rf.prediction, ttesting$CPUPower)
+error
+g
+
+
+
+# RF
+modelo.rf <- randomForest(CPUPower ~ ., ttraining, mtry = 2, ntree = 100, importance = TRUE)
+rf.prediction <- predict(modelo.rf, ttesting)
+error1 <- indices.precision(rf.prediction, ttesting$CPUPower,cantidad.variables.predictoras=(ncol(ttesting)-1))
+g1 <- plot.real.prediccion(rf.prediction, ttesting$CPUPower)
+error1
+g1
+
+```
+
+## Kurá
+
+```{r}
+sample <- createDataPartition(edaset5fn$CPUPower, p=0.8, list=F)
+ttraining <- edaset5fn[sample,]
+ttesting <- edaset5fn[-sample,]
+
+# KNN
+knn.ep <- train.knn(CPUPower~.,ttraining, kmax = floor(sqrt(nrow(ttraining))),kernel = "epanechnikov")
+knn.prediction <- predict(knn.ep, ttesting)
+error <- indices.precision(knn.prediction$prediction, ttesting$CPUPower,cantidad.variables.predictoras=(ncol(ttesting)-1))
+g <- plot.real.prediccion(knn.prediction$prediction, ttesting$CPUPower)
+error
+g
+
+
+# RF 
+modelo.rf <- randomForest(CPUPower ~ ., ttraining, mtry = 3, ntree = 100, importance = TRUE)
+rf.prediction <- predict(modelo.rf, ttesting)
+error1 <- indices.precision(rf.prediction, ttesting$CPUPower,cantidad.variables.predictoras=(ncol(ttesting)-1))
+g1 <- plot.real.prediccion(rf.prediction, ttesting$CPUPower)
+error1
+g1
+```
+
+## Análisis adicionales
+
+```{r}
+# Andalan
+
+sample <- createDataPartition(edaset1$CPUPower, p=0.8, list=F)
+ttraining <- edaset1[sample,]
+ttesting <- edaset1[-sample,]
+
+library("DataExplorer")
+plot_intro(edaset1)
+
+knn.op <- train.knn(CPUPower~.,ttraining, kmax = floor(sqrt(nrow(ttraining))),kernel = "optimal")
+knn.prediction <- predict(knn.op, ttesting)
+error.andalan <- indices.precision(knn.prediction$prediction, ttesting$CPUPower,cantidad.variables.predictoras=(ncol(ttesting)-1))
+andalan <- plot.real.prediccion(knn.prediction$prediction, ttesting$CPUPower)
+error.andalan
+andalan
+det.andalan <- R2(knn.prediction$prediction, ttesting$CPUPower)
+
+residuos <- knn.prediction$prediction - ttesting$CPUPower
+library("ggpubr")
+ggdensity(residuos, fill = "lightgray")
+ggqqplot(residuos) 
+
+# Dribe
+
+sample <- createDataPartition(edaset2fn$CPUPower, p=0.8, list=F)
+ttraining <- edaset2fn[sample,]
+ttesting <- edaset2fn[-sample,]
+
+# RF 
+modelo.rf <- randomForest(CPUPower ~ ., ttraining, mtry = 4, ntree = 100, importance = TRUE)
+rf.prediction <- predict(modelo.rf, ttesting)
+error.dribe <- indices.precision(rf.prediction, ttesting$CPUPower,cantidad.variables.predictoras=(ncol(ttesting)-1))
+dribe <- plot.real.prediccion(rf.prediction, ttesting$CPUPower)
+error.dribe
+dribe
+
+det.dribe <- R2(rf.prediction, ttesting$CPUPower)
+
+residuos1 <- rf.prediction - ttesting$CPUPower
+importancia <- randomForest::importance(modelo.rf)
+importancia 
+plot(modelo.rf)
+library(pdp)
+partialPlot(modelo.rf, pred.data = ttesting, x.var = "ReqCPUS") 
+partialPlot(modelo.rf, pred.data = ttesting, x.var = "ReqCPUS") 
+varImpPlot(modelo.rf)
+imp <- varImp(modelo.rf)
+
+imp <- data.frame(
+  predictor = c("QOS", "ReqCPUS", "ReqMem", "ResvCPURAW", "Submit", "TimelimitRaw", "Priority"),
+  importance = c(8.747330, 89.809084, 18.426466, 7.214572, 68.167645, 18.843466, 23.513270)
+)
+
+ggplot(data = imp, aes(x = reorder(predictor, importance), y = importance, fill = importance)) +
+  labs(x = "Predictor", title = "Predictor Importance") +
+  geom_col() +
+  coord_flip() +  
+  theme_bw() + 
+  theme(legend.position = "none")  
+
+#NU
+sample <- createDataPartition(edaset3fn$CPUPower, p=0.8, list=F)
+ttraining <- edaset3fn[sample,]
+ttesting <- edaset3fn[-sample,]
+
+# RF 
+modelo.rf <- randomForest(CPUPower ~ ., ttraining, mtry = 4, ntree = 100, importance = TRUE)
+rf.prediction <- predict(modelo.rf, ttesting)
+error.nu <- indices.precision(rf.prediction, ttesting$CPUPower,cantidad.variables.predictoras=(ncol(ttesting)-1))
+nu <- plot.real.prediccion(rf.prediction, ttesting$CPUPower)
+error.nu
+nu
+det.nu <- R2(rf.prediction, ttesting$CPUPower)
+
+#Nukwa
+sample <- createDataPartition(edaset4n$CPUPower, p=0.8, list=F)
+ttraining <- edaset4n[sample,]
+ttesting <- edaset4n[-sample,]
+
+# RF
+modelo.rf <- randomForest(CPUPower ~ ., ttraining, mtry = 2, ntree = 100, importance = TRUE)
+rf.prediction <- predict(modelo.rf, ttesting)
+error.nukwa <- indices.precision(rf.prediction, ttesting$CPUPower,cantidad.variables.predictoras=(ncol(ttesting)-1))
+nukwa <- plot.real.prediccion(rf.prediction, ttesting$CPUPower)
+error.nukwa
+nukwa
+det.nukwa <- R2(rf.prediction, ttesting$CPUPower)
+
+#Kurá
+sample <- createDataPartition(edaset5fn$CPUPower, p=0.8, list=F)
+ttraining <- edaset5fn[sample,]
+ttesting <- edaset5fn[-sample,]
+
+# RF 
+modelo.rf <- randomForest(CPUPower ~ ., ttraining, mtry = 3, ntree = 100, importance = TRUE)
+rf.prediction <- predict(modelo.rf, ttesting)
+error.kura <- indices.precision(rf.prediction, ttesting$CPUPower,cantidad.variables.predictoras=(ncol(ttesting)-1))
+kura <- plot.real.prediccion(rf.prediction, ttesting$CPUPower)
+error.kura
+kura
+
+det.kura <- R2(rf.prediction, ttesting$CPUPower)
+
+library(gridExtra)
+library(grid)
+
+# Crear versiones con títulos individuales para cada gráfico
+
+andalan_g <- arrangeGrob(andalan, top = textGrob("Andalan", gp = gpar(fontsize = 14, fontface = "bold")))
+dribe_g   <- arrangeGrob(dribe,   top = textGrob("Dribe",   gp = gpar(fontsize = 14, fontface = "bold")))
+nu_g      <- arrangeGrob(nu,      top = textGrob("Nu",      gp = gpar(fontsize = 14, fontface = "bold")))
+nukwa_g   <- arrangeGrob(nukwa,   top = textGrob("Nukwa",   gp = gpar(fontsize = 14, fontface = "bold")))
+kura_g    <- arrangeGrob(kura,    top = textGrob("Kurá",    gp = gpar(fontsize = 14, fontface = "bold")))
+
+grid.arrange(andalan_g, dribe_g, nu_g, nukwa_g, kura_g,
+             ncol = 3)
+
+```
+
+```{r}
+tabla <- data.frame(
+  Andalan = det.andalan,
+  Dribe   = det.dribe,
+  Nu      = det.nu,
+  Nukwa   = det.nukwa,
+  Kurá    = det.kura
+)
+
+library(gridExtra)
+library(grid)
+
+grid.table(tabla)
+```
+
+```{r}
+# Crear data frame con las métricas
+
+metricas <- data.frame(
+  Model = c("Andalan", "Dribe", "Nu", "Nukwa", "Kurá"),
+  RMSE = c(error.andalan$raiz.error.cuadratico,
+           error.dribe$raiz.error.cuadratico,
+           error.nu$raiz.error.cuadratico,
+           error.nukwa$raiz.error.cuadratico,
+           error.kura$raiz.error.cuadratico),
+  RSE = c(error.andalan$error.estandar.residuos,
+          error.dribe$error.estandar.residuos,
+          error.nu$error.estandar.residuos,
+          error.nukwa$error.estandar.residuos,
+          error.kura$error.estandar.residuos),
+  MAE = c(error.andalan$error.absoluto.medio,
+          error.dribe$error.absoluto.medio,
+          error.nu$error.absoluto.medio,
+          error.nukwa$error.absoluto.medio,
+          error.kura$error.absoluto.medio),
+  RE = c(error.andalan$error.relativo,
+         error.dribe$error.relativo,
+         error.nu$error.relativo,
+         error.nukwa$error.relativo,
+         error.kura$error.relativo),
+  COR = c(error.andalan$correlacion,
+          error.dribe$correlacion,
+          error.nu$correlacion,
+          error.nukwa$correlacion,
+          error.kura$correlacion)
+)
+
+
+library(gridExtra)
+library(grid)
+
+grid.table(metricas)
+```
+
